@@ -1,0 +1,61 @@
+{
+  "name": "cliptube",
+  "productName": "ClipTube",
+  "version": "1.0.0",
+  "description": "Download exactly the part you need from any YouTube video",
+  "main": "main.js",
+  "author": "Aayush Paliwal <aayush.paliwal01@gmail.com>",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --publish never",
+    "dist:win": "electron-builder --win --publish never",
+    "dist:mac": "electron-builder --mac --publish never"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.2.0"
+  },
+  "devDependencies": {
+    "electron": "^43.4.0",
+    "electron-builder": "^25.1.8",
+    "puppeteer-core": "^25.7.0"
+  },
+  "build": {
+    "appId": "com.aayushpaliwal.cliptube",
+    "productName": "ClipTube",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**"
+    ],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "deleteAppDataOnUninstall": true,
+      "shortcutName": "ClipTube"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "category": "public.app-category.utilities"
+    }
+  }
+}
