@@ -8,7 +8,7 @@ if (-not $?) { Write-Host "Run 'gh auth login' first."; exit 1 }
 
 # Create the repo and push (skips creation if it already exists)
 try {
-    gh repo create cliptube --private --source . --push --description "Download exactly the part you need from any YouTube video" 2>$null
+    gh repo create cliptube --public --source . --push --description "Download exactly the part you need from any YouTube video - desktop app for Windows & Mac" 2>$null
 } catch {}
 git push -u origin main
 
