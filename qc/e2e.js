@@ -30,7 +30,7 @@ async function connectWithRetry(deadlineMs) {
   const until = Date.now() + deadlineMs;
   for (;;) {
     try {
-      return await puppeteer.connect({ browserURL: `http://127.0.0.1:${PORT}`, defaultViewport: null });
+      return await puppeteer.connect({ browserURL: `http://127.0.0.1:${PORT}`, defaultViewport: null, protocolTimeout: 600_000 });
     } catch (e) {
       if (Date.now() > until) throw new Error("Could not attach to app via CDP: " + e.message);
       await new Promise((r) => setTimeout(r, 1000));
