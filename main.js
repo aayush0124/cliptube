@@ -102,8 +102,40 @@ function runYtdlp(args, onLine) {
   });
 }
 
+// yt-dlp's raw errors are jargon ("HTTP Error 403: Forbidden"). Say what the
+// user can actually do about it.
+function friendlyError(raw) {
+  const e = String(raw);
+  const map = [
+    [/403|unable to download video data|fragment.*not found/i,
+      "YouTube refused the download just now. Wait a few seconds and try again — this usually clears on its own."],
+    // Age check must precede the bot check: "Sign in to confirm your age"
+    // matches both, and the age message is the accurate one.
+    [/age[- ]restricted|confirm your age|inappropriate for some users/i,
+      "This video is age-restricted and can't be downloaded."],
+    [/sign ?in to confirm|not a bot|cookies/i,
+      "YouTube asked to verify you're not a bot. Wait a minute and try again."],
+    [/private video/i, "This video is private, so it can't be downloaded."],
+    [/members[- ]only|join this channel/i, "This video is for channel members only."],
+    [/video unavailable|removed by the uploader|has been terminated/i,
+      "This video isn't available — it may have been removed or made private."],
+    [/is not a valid URL|Unsupported URL/i, "That doesn't look like a YouTube link."],
+    [/live event will begin|is live/i, "Live streams aren't supported. Try again once the stream has ended."],
+    [/getaddrinfo|ENOTFOUND|Temporary failure|network is unreachable|timed? ?out/i,
+      "Can't reach YouTube — check your internet connection."],
+    [/no space left|ENOSPC/i, "Your disk is full — free up some space and try again."],
+  ];
+  for (const [re, msg] of map) if (re.test(e)) return msg;
+  return e.replace(/^ERROR:\s*/i, "").slice(0, 300);
+}
+
 ipcMain.handle("get-info", async (_e, url) => {
-  const out = await runYtdlp([...baseArgs(), "-J", "--skip-download", url]);
+  let out;
+  try {
+    out = await runYtdlp([...baseArgs(), "-J", "--skip-download", url]);
+  } catch (e) {
+    throw new Error(friendlyError(e.message));
+  }
   const info = JSON.parse(out);
   return {
     title: info.title,
@@ -241,21 +273,26 @@ ipcMain.handle("make-clip", async (_e, opts) => {
       }
     };
     try {
-      try {
-        await attempt();
-      } catch (e) {
-        // Stream URLs go stale/403 transiently — one more round with a
-        // completely fresh extraction clears nearly all of them.
-        if (!transient(e)) throw e;
-        cleanPartial();
-        await new Promise((r) => setTimeout(r, 2000));
-        await attempt();
+      // Stream URLs go stale/403 transiently. Each round re-extracts from
+      // scratch; backing off between rounds clears nearly all of them.
+      const backoffs = [2000, 6000];
+      for (let round = 0; ; round++) {
+        try {
+          await attempt();
+          break;
+        } catch (e) {
+          if (!transient(e) || round >= backoffs.length) throw e;
+          cleanPartial();
+          job.stage = "YouTube is busy — retrying…";
+          sendJob(id);
+          await new Promise((r) => setTimeout(r, backoffs[round]));
+        }
       }
       const produced = findProduced(outDir(), id);
       if (!produced) throw new Error("Finished but no output file found");
       Object.assign(job, { status: "done", progress: 100, file: path.join(outDir(), produced) });
     } catch (e) {
-      Object.assign(job, { status: "error", error: String(e.message).slice(0, 400) });
+      Object.assign(job, { status: "error", error: friendlyError(e.message) });
     }
     sendJob(id);
   })();

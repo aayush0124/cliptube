@@ -11,7 +11,9 @@ const os = require("os");
 const path = require("path");
 const puppeteer = require("puppeteer-core");
 
-const PORT = 9223;
+// A fixed port lets a stale app from an earlier run answer the CDP handshake,
+// after which every evaluate() hits a detached frame. Fresh port per run.
+const PORT = 9300 + Math.floor(Math.random() * 600);
 const ROOT = path.join(__dirname, "..");
 const results = [];
 let appProc = null;
@@ -38,34 +40,71 @@ async function connectWithRetry(deadlineMs) {
   }
 }
 
+// CDP calls to Electron hiccup non-deterministically (transient
+// "Runtime.callFunctionOn timed out" / detached frame). A blip during polling
+// is not a product failure, so swallow it and keep polling until the deadline;
+// only a truly closed target aborts.
+async function evalSafe(page, fn, arg) {
+  try {
+    return { ok: true, value: await page.evaluate(fn, arg) };
+  } catch (e) {
+    const msg = String(e.message);
+    if (/Target closed|Session closed|browser has disconnected/i.test(msg)) throw e;
+    return { ok: false, error: msg };
+  }
+}
+
 async function waitFor(page, fn, timeoutMs, what) {
   const until = Date.now() + timeoutMs;
+  let lastBlip = null;
   for (;;) {
-    const v = await page.evaluate(fn);
-    if (v) return v;
-    if (Date.now() > until) throw new Error("Timed out waiting for: " + what);
-    await new Promise((r) => setTimeout(r, 800));
+    const r = await evalSafe(page, fn);
+    if (r.ok && r.value) return r.value;
+    if (!r.ok) lastBlip = r.error;
+    if (Date.now() > until) {
+      throw new Error(`Timed out waiting for: ${what}${lastBlip ? ` (last CDP blip: ${lastBlip.slice(0, 60)})` : ""}`);
+    }
+    await new Promise((r2) => setTimeout(r2, 800));
   }
 }
 
 async function setInput(page, sel, value) {
-  await page.evaluate((s, v) => {
-    const el = document.querySelector(s);
-    el.value = v;
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-  }, sel, value);
+  // Retry through transient CDP blips rather than failing the whole check.
+  for (let i = 0; ; i++) {
+    const r = await evalSafe(page, ({ s, v }) => {
+      const el = document.querySelector(s);
+      el.value = v;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      return true;
+    }, { s: sel, v: value });
+    if (r.ok) return;
+    if (i >= 3) throw new Error(`setInput(${sel}) failed: ${r.error}`);
+    await new Promise((r2) => setTimeout(r2, 1500));
+  }
 }
 
-async function runClipTest(page, name, { url, start, end, quality = "720", audioOnly = false, expectSec, tolerance = 0.5, ext }) {
-  await page.evaluate(() => document.getElementById("resetBtn").click());
+async function clickSafe(page, sel) {
+  for (let i = 0; ; i++) {
+    const r = await evalSafe(page, (s) => { document.querySelector(s).click(); return true; }, sel);
+    if (r.ok) return;
+    if (i >= 3) throw new Error(`click(${sel}) failed: ${r.error}`);
+    await new Promise((r2) => setTimeout(r2, 1500));
+  }
+}
+
+async function runClipTest(page, name, { url, start, end, quality = "720", audioOnly = false, expectSec, tolerance = 0.5, ext, expectTitle }) {
+  await clickSafe(page, "#resetBtn");
+  // Clear the hint so a stale "Video found" from the previous test can't let
+  // the next wait pass instantly.
+  await evalSafe(page, () => { document.getElementById("urlHint").textContent = ""; });
   await setInput(page, "#url", url);
-  await page.click("#fetchBtn");
+  await clickSafe(page, "#fetchBtn");
   await waitFor(page, () => document.getElementById("urlHint").textContent.includes("Video found"), 90_000, "video info");
   await setInput(page, "#start", start);
   await setInput(page, "#end", end);
-  await page.select("#quality", quality);
-  await page.evaluate((a) => { document.getElementById("audioOnly").checked = a; }, audioOnly);
-  await page.click("#goBtn");
+  await setInput(page, "#quality", quality);
+  await evalSafe(page, (a) => { document.getElementById("audioOnly").checked = a; }, audioOnly);
+  await clickSafe(page, "#goBtn");
   const msg = await waitFor(
     page,
     () => {
@@ -76,9 +115,15 @@ async function runClipTest(page, name, { url, start, end, quality = "720", audio
     "clip finish"
   );
   if (!/Clip ready/.test(msg)) throw new Error("Clip failed: " + msg);
-  const file = await page.evaluate(() => currentFile);
+  // `currentFile` is a top-level `let` in the renderer, so it lives in the
+  // global lexical scope, not on `window` — reference it bare.
+  const file = await waitFor(page, () => (typeof currentFile !== "undefined" ? currentFile : null), 30_000, "output file path");
   if (!file || !fs.existsSync(file)) throw new Error("Output file missing: " + file);
   if (ext && !file.toLowerCase().endsWith(ext)) throw new Error(`Expected ${ext}, got ${path.basename(file)}`);
+  // Duration alone can pass while the wrong video was fetched — check identity too.
+  if (expectTitle && !path.basename(file).includes(expectTitle)) {
+    throw new Error(`Wrong video: expected "${expectTitle}" in ${path.basename(file)}`);
+  }
   const dur = ffprobeDuration(file);
   const snapped = /snapped/.test(msg);
   const tol = snapped ? 4 : tolerance;
@@ -96,7 +141,14 @@ async function runClipTest(page, name, { url, start, end, quality = "720", audio
       ? { cmd: path.join(ROOT, "node_modules", "electron", "dist", "electron.exe"), args: ["."] }
       : { cmd: "npx", args: ["electron", "."] };
 
-  console.log(`Launching: ${spawnCmd.cmd} ${spawnCmd.args.join(" ")}`);
+  // Leftover instances (installer's run-after-finish, a killed prior run)
+  // compete for the app and confuse the debugger attach.
+  try {
+    if (os.platform() === "win32") execFileSync("taskkill", ["/F", "/IM", "ClipTube.exe", "/T"], { stdio: "ignore" });
+    else execFileSync("pkill", ["-f", "ClipTube"], { stdio: "ignore" });
+  } catch { /* nothing running */ }
+
+  console.log(`Launching: ${spawnCmd.cmd} ${spawnCmd.args.join(" ")}  (CDP port ${PORT})`);
   appProc = spawn(spawnCmd.cmd, spawnCmd.args, {
     cwd: ROOT,
     env: { ...process.env, CLIPTUBE_RDP: String(PORT) },
@@ -119,7 +171,7 @@ async function runClipTest(page, name, { url, start, end, quality = "720", audio
   try {
     const d = await runClipTest(page, "clip", {
       url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
-      start: "0:02", end: "0:10", expectSec: 8, ext: ".mp4",
+      start: "0:02", end: "0:10", expectSec: 8, ext: ".mp4", expectTitle: "Me at the zoo",
     });
     record("720p video clip (8s, exact)", true, d);
   } catch (e) { record("720p video clip (8s, exact)", false, e.message); }
@@ -128,7 +180,7 @@ async function runClipTest(page, name, { url, start, end, quality = "720", audio
   try {
     const d = await runClipTest(page, "clip4k", {
       url: "https://www.youtube.com/watch?v=aqz-KE-bpKQ",
-      start: "1:00", end: "1:12", quality: "best", expectSec: 12, ext: ".mp4",
+      start: "1:00", end: "1:12", quality: "best", expectSec: 12, ext: ".mp4", expectTitle: "Big Buck Bunny",
     });
     record("Best-quality clip from 4K video (12s)", true, d);
   } catch (e) { record("Best-quality clip from 4K video (12s)", false, e.message); }
@@ -137,7 +189,7 @@ async function runClipTest(page, name, { url, start, end, quality = "720", audio
   try {
     const d = await runClipTest(page, "mp3", {
       url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
-      start: "0:03", end: "0:09", audioOnly: true, expectSec: 6, tolerance: 1.2, ext: ".mp3",
+      start: "0:03", end: "0:09", audioOnly: true, expectSec: 6, tolerance: 1.2, ext: ".mp3", expectTitle: "Me at the zoo",
     });
     record("Audio-only MP3 clip (6s)", true, d);
   } catch (e) { record("Audio-only MP3 clip (6s)", false, e.message); }
@@ -145,7 +197,7 @@ async function runClipTest(page, name, { url, start, end, quality = "720", audio
   // 5. Bad URL shows a friendly error
   try {
     await setInput(page, "#url", "https://www.youtube.com/watch?v=not_a_real_id00");
-    await page.click("#fetchBtn");
+    await clickSafe(page, "#fetchBtn");
     await waitFor(page, () => document.querySelector("#urlHint .msg-err") !== null, 60_000, "bad-url error");
     record("Bad URL → friendly error", true);
   } catch (e) { record("Bad URL → friendly error", false, e.message); }
@@ -155,7 +207,7 @@ async function runClipTest(page, name, { url, start, end, quality = "720", audio
     await setInput(page, "#url", "https://www.youtube.com/watch?v=jNQXAC9IVRw");
     await setInput(page, "#start", "0:10");
     await setInput(page, "#end", "0:05");
-    await page.click("#goBtn");
+    await clickSafe(page, "#goBtn");
     await waitFor(page, () => /after start/.test(document.getElementById("statusMsg").textContent), 20_000, "validation error");
     record("End ≤ start rejected", true);
   } catch (e) { record("End ≤ start rejected", false, e.message); }
