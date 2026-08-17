@@ -31,6 +31,27 @@ Installers are unsigned: Windows SmartScreen shows "More info → Run anyway";
 on macOS right-click → Open the first time (or notarize with an Apple
 Developer ID to remove the prompt).
 
+## Troubleshooting
+
+**"This file does not have an app associated with it" when clicking the
+ClipTube shortcut** — the shortcut outlived its target. Two causes:
+
+1. *Installed while elevated.* Don't right-click → "Run as administrator" on
+   the installer. It is a per-user install: elevating puts the app in the
+   admin account's AppData while the shortcut lands in yours, so the shortcut
+   points at a path that doesn't exist for you. From v1.0.1 the installer asks
+   who to install for and elevates only when needed, which avoids this.
+2. *Antivirus quarantined the app.* ClipTube is unsigned and downloads its
+   yt-dlp engine from GitHub, which some corporate endpoint AV flags. Check
+   the AV's quarantine/protection history, restore and allow it, reinstall.
+
+To tell which one, check whether the app survived:
+```powershell
+Get-ChildItem "$env:LOCALAPPDATA\Programs\cliptube\ClipTube.exe","C:\Program Files\ClipTube\ClipTube.exe" -ErrorAction SilentlyContinue
+```
+A path printed means only the shortcut broke — launch it from there. Nothing
+printed means the app is gone (cause 2).
+
 ## QC harness
 `node qc/e2e.js` drives the real UI over the Chrome DevTools Protocol:
 fetches a video, cuts a clip, and verifies the output file's duration with

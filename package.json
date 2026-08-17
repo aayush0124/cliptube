@@ -1,7 +1,7 @@
 {
   "name": "cliptube",
   "productName": "ClipTube",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Download exactly the part you need from any YouTube video",
   "main": "main.js",
   "author": "Aayush Paliwal <aayush.paliwal01@gmail.com>",
@@ -42,9 +42,17 @@
       ]
     },
     "nsis": {
-      "oneClick": true,
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "menuCategory": false,
+      "shortcutName": "ClipTube",
+      "runAfterFinish": true,
       "deleteAppDataOnUninstall": true,
-      "shortcutName": "ClipTube"
+      "artifactName": "ClipTube-Setup-${version}.${ext}"
     },
     "mac": {
       "target": [
