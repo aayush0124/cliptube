@@ -1,7 +1,7 @@
 {
   "name": "cliptube",
   "productName": "ClipTube",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Download exactly the part you need from any YouTube video",
   "main": "main.js",
   "author": "Aayush Paliwal <aayush.paliwal01@gmail.com>",

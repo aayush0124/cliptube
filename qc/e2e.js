@@ -194,7 +194,18 @@ async function runClipTest(page, name, { url, start, end, quality = "720", audio
     record("Audio-only MP3 clip (6s)", true, d);
   } catch (e) { record("Audio-only MP3 clip (6s)", false, e.message); }
 
-  // 5. Bad URL shows a friendly error
+  // 5. Long video + deep timestamp + 1080p — the real-world case that shipped
+  // broken in v1.0.2: YouTube 403s the android_vr fallback on videos like this.
+  try {
+    const d = await runClipTest(page, "long", {
+      url: "https://www.youtube.com/watch?v=pWFwDD5r-JI",
+      start: "20:25", end: "21:59", quality: "1080", expectSec: 94, tolerance: 1.5,
+      ext: ".mp4", expectTitle: "National Address",
+    });
+    record("Long video, deep timestamp, 1080p (94s)", true, d);
+  } catch (e) { record("Long video, deep timestamp, 1080p (94s)", false, e.message); }
+
+  // 6. Bad URL shows a friendly error
   try {
     await setInput(page, "#url", "https://www.youtube.com/watch?v=not_a_real_id00");
     await clickSafe(page, "#fetchBtn");
@@ -202,7 +213,7 @@ async function runClipTest(page, name, { url, start, end, quality = "720", audio
     record("Bad URL → friendly error", true);
   } catch (e) { record("Bad URL → friendly error", false, e.message); }
 
-  // 6. End before start rejected
+  // 7. End before start rejected
   try {
     await setInput(page, "#url", "https://www.youtube.com/watch?v=jNQXAC9IVRw");
     await setInput(page, "#start", "0:10");

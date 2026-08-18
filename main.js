@@ -74,8 +74,13 @@ function baseArgs() {
     "--no-playlist",
     "--newline",
     "--windows-filenames",
-    "--retries", "5",
-    "--fragment-retries", "5",
+    "--retries", "10",
+    "--fragment-retries", "10",
+    // YouTube now demands PO Tokens for its web clients; without a token
+    // provider yt-dlp falls back to android_vr, whose stream URLs YouTube
+    // then refuses with 403 partway through. These clients need no token and
+    // serve URLs that download reliably.
+    "--extractor-args", "youtube:player_client=android,web_embedded",
     "--ffmpeg-location", ffmpegPath(),
     // Electron's own binary doubles as the JS runtime yt-dlp needs for YouTube.
     "--js-runtimes", `node:${process.execPath}`,
